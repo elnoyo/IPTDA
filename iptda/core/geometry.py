@@ -99,7 +99,8 @@ def min_enclosing_radii(X: np.ndarray, simplices: np.ndarray) -> np.ndarray:
 
 
 def maxmin_subsample(X: np.ndarray, k: int, first: int = 0) -> np.ndarray:
-    """Submuestreo por el punto más lejano (maxmin). Devuelve índices."""
+    """Submuestreo por el punto más lejano (maxmin). Devuelve índices.
+    Se detiene antes si los puntos restantes repiten puntos ya elegidos."""
     X = np.asarray(X, dtype=float)
     n = len(X)
     k = min(k, n)
@@ -107,6 +108,8 @@ def maxmin_subsample(X: np.ndarray, k: int, first: int = 0) -> np.ndarray:
     dmin = np.linalg.norm(X - X[first], axis=1)
     for _ in range(1, k):
         j = int(np.argmax(dmin))
+        if dmin[j] == 0:
+            break
         idx.append(j)
         dmin = np.minimum(dmin, np.linalg.norm(X - X[j], axis=1))
     return np.array(idx, dtype=int)

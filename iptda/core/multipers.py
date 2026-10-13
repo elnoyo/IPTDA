@@ -30,7 +30,8 @@ from scipy.spatial import cKDTree
 
 from .filtration import Filtration, rips_filtration
 from .geometry import pairwise_distances
-from .persistence import PersistenceResult, compute_persistence
+from .persistence import (PersistenceResult, coboundary_lists, cohomology_pairs,
+                          compute_persistence)
 
 CODENSITIES = ["Distancia al k-ésimo vecino", "Densidad gaussiana (invertida)"]
 
@@ -67,6 +68,8 @@ class Bifiltration:
 
 def rips_codensity_bifiltration(X: np.ndarray, cod: np.ndarray, max_dim: int = 2,
                                 max_radius: float = np.inf) -> Bifiltration:
+    """Bifiltración Rips × codensidad; los símplices quedan en el orden de
+    la filtración de Rips (por r y después por dimensión)."""
     F = rips_filtration(X, max_dim, max_radius)
     cod = np.asarray(cod, dtype=float)
     c = np.array([cod[list(s)].max() for s in F.simplices])
@@ -83,16 +86,25 @@ def hilbert_function(B: Bifiltration, r_grid: np.ndarray, c_grid: np.ndarray,
     r_grid = np.asarray(r_grid, dtype=float)
     c_grid = np.asarray(c_grid, dtype=float)
     out = {k: np.zeros((len(c_grid), len(r_grid)), dtype=int) for k in dims}
+    # Los símplices de B están ordenados por r (y dimensión): cada
+    # subcomplejo {c_σ <= c_j} hereda ese orden, así que la matriz cofrontera
+    # global se reutiliza restringida a una máscara.
+    top = max(dims)
+    F = Filtration(list(B.simplices), B.r.copy(), reliable_dim=B.reliable_dim)
+    if F.simplices != B.simplices:      # no debería ocurrir: B ya está ordenada
+        raise RuntimeError("La bifiltración no está en orden de filtración de Rips.")
+    dim_arr = F.dims
+    cob = coboundary_lists(dim_arr, F.boundary(), top)
     for j, cj in enumerate(c_grid):
         mask = B.c <= cj
         if np.any(mask):
-            F = B.restrict(B.r, mask)
-            P = compute_persistence(F, max_dim=max(dims), cycles=False)
-            for k in dims:
-                D = P.diagram(k)
-                if len(D):
-                    out[k][j] = np.sum((D[:, 0][None, :] <= r_grid[:, None]) &
-                                       (r_grid[:, None] < D[:, 1][None, :]), axis=1)
+            for d, a, b in cohomology_pairs(dim_arr, cob, top, active=mask):
+                if d not in out:
+                    continue
+                birth = B.r[a]
+                death = np.inf if b is None else B.r[b]
+                if death > birth:
+                    out[d][j] += (birth <= r_grid) & (r_grid < death)
         if progress is not None:
             progress(j + 1, len(c_grid))
     return out

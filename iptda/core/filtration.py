@@ -235,6 +235,39 @@ def cech_filtration(X: np.ndarray, max_dim: int = 2, max_radius: float = np.inf,
 # Alfa
 # ---------------------------------------------------------------------------
 
+def _affine_hull_coordinates(X: np.ndarray, rtol: float = 1e-9) -> np.ndarray:
+    """Coordenadas isométricas de ``X`` en su envolvente afín. Si los puntos
+    están en un subespacio afín propio (p. ej. una curva plana en R³), la
+    triangulación de Delaunay no existe en R^d; las distancias, y por tanto
+    el complejo alfa, se conservan al proyectar sobre ese subespacio."""
+    Xc = X - X.mean(axis=0)
+    _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+    rank = int(np.sum(S > rtol * max(S[0], 1e-300))) if len(S) else 0
+    if rank >= X.shape[1] or rank == 0:
+        return X
+    return Xc @ Vt[:rank].T
+
+
+def _near_duplicates(X: np.ndarray, rtol: float = 1e-9) -> np.ndarray:
+    """``rep[i]`` = menor índice de un punto a distancia <= rtol·escala de
+    ``X[i]`` (agrupando transitivamente)."""
+    from scipy.spatial import cKDTree
+    scale = float(np.max(np.abs(X - X.mean(axis=0)))) if len(X) else 1.0
+    pairs = cKDTree(X).query_pairs(r=rtol * max(scale, 1e-300), output_type="ndarray")
+    parent = np.arange(len(X))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    for a, b in pairs:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return np.array([find(a) for a in range(len(X))])
+
+
 def alpha_filtration(X: np.ndarray) -> Filtration:
     """Filtración alfa a partir de la triangulación de Delaunay.
 
@@ -248,8 +281,33 @@ def alpha_filtration(X: np.ndarray) -> Filtration:
     Los valores son radios (no radios al cuadrado).
     """
     X = np.asarray(X, dtype=float)
+    X = _affine_hull_coordinates(X)
+    # Puntos repetidos (o a distancia despreciable, p. ej. una señal
+    # periódica muestreada): se triangula un representante de cada grupo y
+    # cada copia se une a él con una arista de valor d/2 (≈ 0). Solo se
+    # añaden barras de longitud (casi) nula.
+    rep = _near_duplicates(X)
+    if np.any(rep != np.arange(len(X))):
+        keep = np.nonzero(rep == np.arange(len(X)))[0]
+        F = alpha_filtration(X[keep])
+        simplices = [tuple(sorted(int(keep[v]) for v in s)) for s in F.simplices]
+        values = list(F.values)
+        for i in np.nonzero(rep != np.arange(len(X)))[0]:
+            r = int(rep[i])
+            simplices += [(int(i),), (min(int(i), r), max(int(i), r))]
+            values += [0.0, float(np.linalg.norm(X[i] - X[r]) / 2)]
+        return Filtration(simplices, np.array(values), reliable_dim=F.reliable_dim, name="Alfa")
     n, d = X.shape
+    if n <= d:
+        # muy pocos puntos para triangular: se usa Čech (que coincide con alfa
+        # cuando todos los símplices son de Delaunay)
+        G = cech_filtration(X, max_dim=n - 1)
+        G.reliable_dim, G.name = d, "Alfa"
+        return G
     tri = Delaunay(X)
+    if len(getattr(tri, "coplanar", [])):
+        raise ValueError("Triangulación de Delaunay degenerada: algunos puntos quedaron fuera "
+                         "(coplanares). Añada ruido a los datos.")
     top = [tuple(sorted(int(v) for v in s)) for s in tri.simplices]
     # todas las caras
     faces: dict[int, set] = {k: set() for k in range(1, d + 2)}

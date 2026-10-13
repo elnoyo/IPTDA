@@ -180,6 +180,41 @@ def test_circle_has_one_long_h1(circle_pts):
     assert len([p for p in P.pairs if p.dim == 0 and p.is_essential]) == 1
 
 
+@pytest.mark.parametrize("name", ["Circunferencia con atípicos", "Toro"])
+def test_cohomology_equals_homology(name):
+    """La reducción cofrontera (sin representantes) da los mismos pares."""
+    X = ds.DATASETS[name].sample(45, 0.03, 2)
+    F = rips_filtration(X, 3 if X.shape[1] == 3 else 2, 1.2)
+    A = compute_persistence(F, cycles=False)
+    B = compute_persistence(F, cycles=True)
+    key = lambda P: sorted((p.dim, p.birth_index, p.death_index if p.death_index is not None else -1)
+                           for p in P.pairs)
+    assert key(A) == key(B)
+
+
+def test_alpha_flat_cloud_in_3d():
+    """Una curva plana en R³ (inmersión de un seno con d = 3) no admite
+    Delaunay 3D; la filtración alfa se calcula en su envolvente afín."""
+    _, x = make_signal("Seno", 300, 0.0, 0, period=40)
+    E = takens_embedding(x, 3, 10, 2)
+    P = compute_persistence(alpha_filtration(E))
+    Q = compute_persistence(alpha_filtration(E @ np.linalg.qr(np.random.default_rng(0)
+                                                               .normal(size=(3, 3)))[0]))
+    assert np.allclose(sorted_dgm(P.diagram(1)), sorted_dgm(Q.diagram(1)))
+    assert np.max(np.diff(P.diagram(1), axis=1)) > 0.5
+
+
+def test_alpha_with_duplicate_points():
+    X = ds.DATASETS["Circunferencia"].sample(30, 0.02, 4)
+    Xd = np.vstack([X, X[:7], X[:3] + 1e-14])
+    F = alpha_filtration(Xd)
+    assert F.check()
+    assert {s[0] for s in F.simplices if len(s) == 1} == set(range(len(Xd)))
+    P, Q = compute_persistence(alpha_filtration(X)), compute_persistence(F)
+    for d in (0, 1):
+        assert np.allclose(sorted_dgm(P.diagram(d)), sorted_dgm(Q.diagram(d)))
+
+
 def test_lower_star_path():
     f = np.array([0.0, 2.0, 1.0, 3.0, -1.0])
     P = compute_persistence(lower_star_path(f), max_dim=0)
