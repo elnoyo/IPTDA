@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=7
+# Solo para validar los algoritmos propios en los tests (opcional):
+gudhi>=3.8
