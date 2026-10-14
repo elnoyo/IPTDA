@@ -9,6 +9,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+QtCore = pytest.importorskip("PySide6.QtCore")
 
 try:
     import matplotlib
@@ -37,15 +38,33 @@ def click(canvas, ax, x, y, button=1):
 
 
 def no_error(panel):
-    assert panel.status.styleSheet() != "color: #b3261e;", panel.status.text()
+    assert not panel.has_error, panel.status.text()
 
 
-def test_main_window_visits_all_panels(app):
+def test_main_window_visits_all_panels_and_themes(app):
     from iptda.app import PANELS, MainWindow
+    from iptda.gui import style
     w = MainWindow()
     for i in range(len(PANELS)):
-        w.nav.setCurrentRow(i)
+        w.show_panel(i)
         assert w.stack.currentWidget() is w.panels[i]
+        assert w.current_panel_index() == i
+    # la barra lateral contiene cabeceras de sección no seleccionables
+    rows = [r for r in range(w.nav.count()) if r not in w._panel_of_row]
+    assert rows and all(not (w.nav.item(r).flags() & QtCore.Qt.ItemIsSelectable) for r in rows)
+    w.nav.setCurrentRow(w._row_of_panel[2])
+    assert w.stack.currentWidget() is w.panels[2]
+    # cambio de tema con todos los paneles creados
+    before = style.current
+    w.toggle_theme()
+    assert style.current != before
+    for p in w.panels.values():
+        assert not getattr(p, "has_error", False)
+    w.toggle_theme()
+    assert style.current == before
+    # la portada navega a los paneles
+    w.panels[0].navigate.emit(7)
+    assert w.stack.currentWidget() is w.panels[7]
     w.close()
 
 
@@ -97,6 +116,28 @@ def test_homology_panel(app):
     assert "repetido" in p.status.text()
 
 
+@pytest.mark.skipif(__import__("sys").version_info >= (3, 12),
+                    reason="desde Python 3.12 None es inmortal y su contador no cambia")
+def test_qt_calls_keep_none_refcount(app):
+    """Regresión: PySide6 6.12.0 con Python < 3.12 pierde una referencia a
+    None en cada llamada a un método que no devuelve nada (setText…), y el
+    intérprete acaba abortando («none_dealloc»). Ver requirements.txt."""
+    import gc
+    import sys
+    from iptda.gui.panels.homology import HomologyPanel
+    p = HomologyPanel()
+    p.source.setCurrentText("Toro (polígono fundamental)")
+    gc.collect()
+    before = sys.getrefcount(None)
+    for _ in range(20):
+        for i in range(p.gen.count()):
+            p.gen.setCurrentIndex(i)
+        p._show_matrix()
+        p.set_status("…")
+    gc.collect()
+    assert sys.getrefcount(None) >= before - 50
+
+
 def test_persistence_panel(app):
     from iptda.core.filtration import METHODS
     from iptda.gui.panels.persistence import PersistencePanel
@@ -105,6 +146,11 @@ def test_persistence_panel(app):
         p.method.setCurrentText(m)
         no_error(p)
     p.method.setCurrentText("Vietoris–Rips")
+    for k in range(p.field.count()):          # coeficientes Z/2, Z/3, Z/5, Z/7
+        p.field.setCurrentIndex(k)
+        no_error(p)
+        assert p.P.field == p.field.currentData()
+    p.field.setCurrentIndex(0)
     h1 = [q for q in p.pairs if q.dim == 1]
     assert len(h1) >= 2
     best = max(h1, key=lambda q: q.persistence)
@@ -184,7 +230,17 @@ def test_mapper_panel(app):
     click(p.canvas.canvas, p.ax_graph, pos[0], pos[1])
     assert p.sel_node == 0
     click(p.canvas.canvas, p.ax_lens, p.G.intervals[2][0] + 0.01, 2)
-    assert p.sel_interval == 2
+    assert p.sel_cell == 2
+    # lente 2D: recubrimiento por rectángulos y nervio con triángulos
+    p.lens2.setCurrentText("Coordenada y")
+    p.nint.setValue(5)
+    p.overlap.setValue(0.4)
+    no_error(p)
+    assert p.G.lens_dim == 2 and len(p.G.cells) == 25
+    (a, b), (c, d) = p.G.cells[12]
+    click(p.canvas.canvas, p.ax_lens, (a + b) / 2, (c + d) / 2)
+    assert p.sel_cell == 12
+    assert "Nervio" in p.info.text() or not p.G.triangles
 
 
 def test_multiparameter_panel(app):
@@ -200,3 +256,11 @@ def test_multiparameter_panel(app):
     p.cod.setCurrentIndex(1)
     p.dim.setCurrentIndex(0)
     no_error(p)
+    # nube 3D con atípicos añadidos
+    p.cod.setCurrentIndex(0)
+    p.data.n.setValue(50)
+    p.data.combo.setCurrentIndex(p.data.combo.findData("Nudo de trébol"))
+    p.data.outliers.setValue(20)
+    no_error(p)
+    assert p.X.shape == (60, 3)
+    assert p.canvas.figure.axes[0].name == "3d"

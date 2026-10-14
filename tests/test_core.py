@@ -215,6 +215,76 @@ def test_alpha_with_duplicate_points():
         assert np.allclose(sorted_dgm(P.diagram(d)), sorted_dgm(Q.diagram(d)))
 
 
+def _dim_filtration(entry):
+    from iptda.core.filtration import Filtration
+    F0 = entry.filtration()
+    return Filtration(list(F0.simplices), np.array([len(s) - 1 for s in F0.simplices], float),
+                      reliable_dim=2)
+
+
+@pytest.mark.parametrize("cycles", [False, True])
+def test_persistence_over_fields(cycles):
+    """RP² y la botella de Klein: los diagramas dependen del cuerpo."""
+    from iptda.core.complexes_library import LIBRARY
+    rp2 = _dim_filtration(LIBRARY["Plano proyectivo RP² (polígono fundamental)"])
+    klein = _dim_filtration(LIBRARY["Botella de Klein (polígono fundamental)"])
+    expected = {("rp2", 2): [1, 1, 1], ("rp2", 3): [1, 0, 0], ("rp2", 5): [1, 0, 0],
+                ("klein", 2): [1, 2, 1], ("klein", 3): [1, 1, 0], ("klein", 7): [1, 1, 0]}
+    for (name, p), betti in expected.items():
+        F = rp2 if name == "rp2" else klein
+        P = compute_persistence(F, field=p, cycles=cycles, essential_cycles=cycles)
+        assert [P.betti_at(2.0, k) for k in range(3)] == betti, (name, p)
+        assert P.field == p
+
+
+def test_persistence_mod_p_matches_homology_ranks():
+    """β_k(K_t) con coeficientes en Z/3 igual a la homología directa."""
+    from iptda.core.complexes_library import LIBRARY
+    from iptda.core.filtration import Filtration
+    F0 = LIBRARY["Plano proyectivo RP² (polígono fundamental)"].filtration()
+    rng = np.random.default_rng(0)
+    vals = {}
+    for s in sorted(F0.simplices, key=len):          # valores crecientes por caras
+        lo = max((vals[s[:i] + s[i + 1:]] for i in range(len(s))), default=0) if len(s) > 1 else 0
+        vals[s] = lo + rng.uniform(0, 1)
+    F = Filtration(list(vals), np.array(list(vals.values())), reliable_dim=2)
+    P = compute_persistence(F, field=3)
+    for t in np.linspace(0, F.values.max(), 9):
+        K = F.simplices_at(t)
+        H = homology(static_complex(K), "Z/3", with_generators=False)
+        assert [P.betti_at(t, k) for k in range(len(H.betti))] == H.betti
+
+
+def test_mod_p_cycles_are_cycles():
+    X = ds.DATASETS["Ocho (dos círculos tangentes)"].sample(35, 0.04, 3)
+    P = compute_persistence(rips_filtration(X, 2), field=5, essential_cycles=True)
+    for q in P.pairs:
+        if q.dim == 1 and q.cycle:
+            bnd = {}
+            for (a, b), c in zip(q.cycle, q.coefficients):
+                bnd[b] = (bnd.get(b, 0) + c) % 5          # ∂[a, b] = b − a
+                bnd[a] = (bnd.get(a, 0) - c) % 5
+            assert not any(bnd.values())
+
+
+@pytest.mark.skipif(gudhi is None, reason="gudhi no instalado")
+def test_mod_p_matches_gudhi():
+    X = ds.DATASETS["Dos circunferencias"].sample(40, 0.05, 2)
+    F = rips_filtration(X, 2)
+    for p in (3, 5):
+        P = compute_persistence(F, field=p, cycles=False)
+        st = gudhi.RipsComplex(points=X).create_simplex_tree(max_dimension=2)
+        st.compute_persistence(homology_coeff_field=p)
+        for d in (0, 1):
+            g = st.persistence_intervals_in_dimension(d) / 2
+            assert np.allclose(sorted_dgm(g), sorted_dgm(P.diagram(d)))
+
+
+def test_non_prime_field_rejected():
+    with pytest.raises(ValueError):
+        compute_persistence(rips_filtration(np.eye(3), 2), field=4)
+
+
 def test_lower_star_path():
     f = np.array([0.0, 2.0, 1.0, 3.0, -1.0])
     P = compute_persistence(lower_star_path(f), max_dim=0)
@@ -391,6 +461,23 @@ def test_mapper_circle_has_a_cycle():
 
 
 # ---------------------------------------------------------------- multiparameter
+def test_mapper_2d_lens():
+    X = ds.DATASETS["Esfera"].sample(800, 0.0, 0)
+    f = np.column_stack([lens_values(X, "Coordenada x"), lens_values(X, "Coordenada y")])
+    G = mapper(X, f, 4, 0.5, "Enlace simple", 0.35)
+    assert G.lens_dim == 2 and len(G.cells) == 16
+    # cada nodo está contenido en su celda
+    for pts, k in zip(G.nodes, G.node_cell):
+        assert set(pts.tolist()) <= set(G.cell_members(k).tolist())
+    # los triángulos son triples de nodos con un punto común
+    sets = [set(m.tolist()) for m in G.nodes]
+    for a, b, c in G.triangles:
+        assert sets[a] & sets[b] & sets[c]
+    assert G.triangles
+    nb = G.nerve_betti()
+    assert nb[0] == G.betti[0] and nb[1] <= G.betti[1]
+
+
 def test_bifiltration_invariants():
     X = ds.DATASETS["Circunferencia con atípicos"].sample(45, 0.02, 1)
     cod = codensity(X, "Distancia al k-ésimo vecino", 4)

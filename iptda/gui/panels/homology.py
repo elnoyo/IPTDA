@@ -50,6 +50,7 @@ ejemplo <code>0 1 2; 2 3; 3 4; 4 2</code>. Se añade automáticamente todas sus 
 
 class HomologyPanel(BasePanel):
     title = "Homología"
+    subtitle = "Matrices borde, rangos y números de Betti sobre distintos cuerpos de coeficientes"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +104,9 @@ class HomologyPanel(BasePanel):
         split.setSizes([650, 520])
         self.plots.addWidget(split)
         self.load()
+
+    def refresh(self):
+        self.compute()        # recalcula (barato) para recolorear tabla y resumen
 
     # -- carga --------------------------------------------------------------------
     def load(self):
@@ -187,7 +191,8 @@ class HomologyPanel(BasePanel):
                         f"<td>{R.counts[k] - rk}</td><td>{rk1}</td><td><b>{R.betti[k]}</b> {exp}</td></tr>")
         chi_b = sum((-1) ** k * b for k, b in enumerate(R.betti))
         html = (f"<b>Homología con coeficientes en {R.field}</b>"
-                "<table cellspacing='0' cellpadding='3' border='1' style='border-color:#c9dcf3'>"
+                f"<table cellspacing='0' cellpadding='4' border='1' "
+                f"style='border-color:{style.T['border']}'>"
                 "<tr><th>k</th><th>c<sub>k</sub></th><th>rango ∂<sub>k</sub></th>"
                 "<th>dim Z<sub>k</sub></th><th>dim B<sub>k</sub></th><th>β<sub>k</sub></th></tr>"
                 + "".join(rows) + "</table>"
@@ -210,7 +215,9 @@ class HomologyPanel(BasePanel):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(["[" + ",".join(map(str, s)) + "]" for s in cols])
         self.table.setVerticalHeaderLabels(["[" + ",".join(map(str, s)) + "]" for s in rows])
-        pos, neg = QBrush(QColor("#dbe8f7")), QBrush(QColor("#fbe3d9"))
+        pos = QBrush(QColor(style.T["accent_soft"]))
+        neg = QBrush(QColor(style.dim_color(1)).lighter(170) if style.current == "light"
+                     else QColor(style.dim_color(1)).darker(260))
         for i in range(len(rows)):
             for j in range(len(cols)):
                 v = int(M[i, j])
@@ -275,12 +282,14 @@ class HomologyPanel(BasePanel):
                 ax.annotate(str(E.labels[v]), P[v], textcoords="offset points", xytext=(5, 5),
                             fontsize=10, color=style.TEXT, fontweight="bold")
             if E.identified:
-                ax.set_title("Polígono fundamental: los vértices con la misma etiqueta se identifican")
+                ax.set_title("Polígono fundamental\n(vértices con la misma etiqueta = mismo vértice)")
             ok = ~np.isnan(P[:, 0])
             setup_axes_for(ax, P[ok], pad=0.25)
             ax.grid(False)
             ax.set_xticks([])
             ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
         else:
             if tris:
                 ax.add_collection3d(Poly3DCollection([P[list(t)] for t in tris], alpha=0.18,

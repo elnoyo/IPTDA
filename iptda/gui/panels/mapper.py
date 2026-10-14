@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
-from matplotlib.collections import LineCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.patches import Rectangle
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox
 
 from ...core.mapper import LENSES, lens_values, mapper
 from .. import style
 from ..plotting import setup_axes_for
 from ..widgets import BasePanel, FloatSlider, MplCanvas, PointCloudBox, dspin, ispin
+
+NO_LENS = "(ninguna: lente 1D)"
 
 THEORY = """
 <h3>Mapper</h3>
@@ -33,13 +35,18 @@ independientes).</p>
 <p><b>Parámetros:</b> pocos intervalos o mucho solapamiento → grafo grueso; muchos
 intervalos con poco solapamiento → grafo fragmentado. Un umbral de agrupamiento
 pequeño parte los grupos; uno grande los fusiona.</p>
-<p><b>Interacción:</b> haz clic en un nodo para ver sus puntos y en la franja de un
-intervalo (gráfica de la lente) para ver su preimagen.</p>
+<p><b>Lente 2D:</b> con dos funciones filtro, f = (f<sub>1</sub>, f<sub>2</sub>), el recubrimiento
+es una rejilla de rectángulos solapados. Tres grupos pueden compartir puntos: el nervio
+tiene entonces <b>triángulos</b> (sombreados), que pueden rellenar ciclos del grafo. Por
+eso se dan los números de Betti del grafo y los del nervio completo.</p>
+<p><b>Interacción:</b> haz clic en un nodo para ver sus puntos, y en un intervalo (o en un
+rectángulo, con lente 2D) para ver su preimagen.</p>
 """
 
 
 class MapperPanel(BasePanel):
     title = "Mapper"
+    subtitle = "Un grafo que resume la forma de los datos a través de una función filtro"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,7 +54,7 @@ class MapperPanel(BasePanel):
         self.G = None
         self.pos = None
         self.sel_node = None
-        self.sel_interval = None
+        self.sel_cell = None
 
         self.data = PointCloudBox(default="Ocho (dos círculos tangentes)", n=400, noise=0.03,
                                   max_n=3000)
@@ -56,12 +63,16 @@ class MapperPanel(BasePanel):
         f = self.add_group("Lente y recubrimiento")
         self.lens = QComboBox()
         self.lens.addItems(LENSES)
+        self.lens2 = QComboBox()
+        self.lens2.addItem(NO_LENS)
+        self.lens2.addItems(LENSES)
         self.sigma = dspin(0.01, 5, 0.3, 0.05)
         self.nint = ispin(1, 60, 10)
         self.overlap = FloatSlider(0, 0.9, 0.3, steps=90, fmt="{:.0%}")
         f.addRow("Función filtro", self.lens)
+        f.addRow("Segunda componente", self.lens2)
         f.addRow("σ (densidad)", self.sigma)
-        f.addRow("Intervalos", self.nint)
+        f.addRow("Intervalos por componente", self.nint)
         f.addRow("Solapamiento", self.overlap)
         g = self.add_group("Agrupamiento")
         self.clust = QComboBox()
@@ -72,14 +83,12 @@ class MapperPanel(BasePanel):
         g.addRow("Distancia (umbral / ε)", self.eps)
         g.addRow("Mín. vecinos (DBSCAN)", self.minpts)
         self.lens.currentIndexChanged.connect(self.compute)
+        self.lens2.currentIndexChanged.connect(self.compute)
         self.clust.currentIndexChanged.connect(self.compute)
         for w in (self.sigma, self.nint, self.eps, self.minpts):
             w.valueChanged.connect(self.compute)
         self.overlap.valueChanged.connect(self.compute)
-        self.info = QLabel()
-        self.info.setObjectName("badge")
-        self.info.setWordWrap(True)
-        self.controls.addWidget(self.info)
+        self.info = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
         self.canvas = MplCanvas()
@@ -89,12 +98,14 @@ class MapperPanel(BasePanel):
 
     def compute(self):
         X = self.data.sample()
-        lens, sigma = self.lens.currentText(), self.sigma.value()
+        lens, lens2, sigma = self.lens.currentText(), self.lens2.currentText(), self.sigma.value()
         args = (self.nint.value(), self.overlap.value(), self.clust.currentText(),
                 self.eps.value(), self.minpts.value())
 
         def job():
             f = lens_values(X, lens, sigma)
+            if lens2 != NO_LENS:
+                f = np.column_stack([f, lens_values(X, lens2, sigma)])
             G = mapper(X, f, *args)
             H = nx.Graph()
             H.add_nodes_from(range(len(G.nodes)))
@@ -107,23 +118,34 @@ class MapperPanel(BasePanel):
     def _done(self, res):
         self.X, self.G, self.pos = res
         self.sel_node = None
-        self.sel_interval = None
+        self.sel_cell = None
         self.redraw()
 
     def _on_click(self, ev):
         if self.G is None or self.canvas.toolbar.mode or ev.inaxes is None:
             return
+        G = self.G
         if ev.inaxes is self.ax_graph and self.pos:
-            P = np.array([self.pos[i] for i in range(len(self.G.nodes))])
+            P = np.array([self.pos[i] for i in range(len(G.nodes))])
             disp = self.ax_graph.transData.transform(P)
             dist = np.hypot(disp[:, 0] - ev.x, disp[:, 1] - ev.y)
             i = int(np.argmin(dist))
             self.sel_node = i if dist[i] < 15 else None
-            self.sel_interval = None
+            self.sel_cell = None
             self.redraw()
-        elif ev.inaxes is self.ax_lens and ev.ydata is not None:
-            k = int(round(ev.ydata))
-            self.sel_interval = k if 0 <= k < len(self.G.intervals) else None
+        elif ev.inaxes is self.ax_lens and ev.xdata is not None:
+            if G.lens_dim == 1:
+                k = int(round(ev.ydata))
+                self.sel_cell = k if 0 <= k < len(G.cells) else None
+            else:
+                C = np.array([[(a + b) / 2 for a, b in c] for c in G.cells])
+                inside = [k for k, c in enumerate(G.cells)
+                          if c[0][0] <= ev.xdata <= c[0][1] and c[1][0] <= ev.ydata <= c[1][1]]
+                if inside:
+                    k = min(inside, key=lambda k: np.hypot(*(C[k] - (ev.xdata, ev.ydata))))
+                    self.sel_cell = k
+                else:
+                    self.sel_cell = None
             self.sel_node = None
             self.redraw()
 
@@ -133,77 +155,102 @@ class MapperPanel(BasePanel):
             return
         fig = self.canvas.figure
         fig.clear()
-        gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.15], height_ratios=[1.6, 1])
+        gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.15], height_ratios=[1.5, 1])
         d = X.shape[1]
         ax = fig.add_subplot(gs[0, 0], projection="3d" if d == 3 else None)
-        f = G.lens
+        f = G.lens if G.lens_dim == 1 else G.lens[:, 0]
         vmin, vmax = float(f.min()), float(f.max())
         hl = None
         if self.sel_node is not None:
             hl = G.nodes[self.sel_node]
-        elif self.sel_interval is not None:
-            a, b = G.intervals[self.sel_interval]
-            hl = np.nonzero((f >= a) & (f <= b))[0]
+        elif self.sel_cell is not None:
+            hl = G.cell_members(self.sel_cell)
         alpha = 0.25 if hl is not None else 0.9
         if d == 2:
-            ax.scatter(X[:, 0], X[:, 1], c=f, cmap=style.SEQ_CMAP, vmin=vmin, vmax=vmax, s=10, alpha=alpha)
+            ax.scatter(X[:, 0], X[:, 1], c=f, cmap=style.SEQ_POINTS, vmin=vmin, vmax=vmax, s=10, alpha=alpha)
             if hl is not None:
                 ax.scatter(X[hl, 0], X[hl, 1], color=style.HIGHLIGHT, s=16)
         else:
-            ax.scatter(*X.T, c=f, cmap=style.SEQ_CMAP, vmin=vmin, vmax=vmax, s=6, alpha=alpha)
+            ax.scatter(*X.T, c=f, cmap=style.SEQ_POINTS, vmin=vmin, vmax=vmax, s=6, alpha=alpha)
             if hl is not None:
                 ax.scatter(*X[hl].T, color=style.HIGHLIGHT, s=12)
         setup_axes_for(ax, X)
-        ax.set_title("Datos coloreados por la lente")
+        ax.set_title("Datos coloreados por la lente" + (" (1ª componente)" if G.lens_dim == 2 else ""))
 
         # lente y recubrimiento
         self.ax_lens = axl = fig.add_subplot(gs[1, 0])
-        for k, (a, b) in enumerate(G.intervals):
-            sel = k == self.sel_interval
-            axl.add_patch(Rectangle((a, k - 0.35), b - a, 0.7,
-                                    facecolor=style.HIGHLIGHT if sel else style.SEQ_CMAP(0.15 + 0.7 * k / max(len(G.intervals) - 1, 1)),
-                                    alpha=0.8 if sel else 0.6, edgecolor="none"))
-        jitter = np.random.default_rng(0).uniform(-0.3, 0.3, len(f))
-        axl.scatter(f, -1 + jitter * 0.6, s=3, color=style.TEXT2)
-        axl.set_xlim(vmin - 0.02 * (vmax - vmin + 1e-9), vmax + 0.02 * (vmax - vmin + 1e-9))
-        axl.set_ylim(-1.6, len(G.intervals) - 0.4)
-        axl.set_yticks([])
-        axl.set_xlabel(self.lens.currentText())
-        axl.set_title("Valores de la lente (abajo) y recubrimiento por intervalos")
-        axl.grid(axis="y", visible=False)
+        if G.lens_dim == 1:
+            for k, (a, b) in enumerate(G.intervals):
+                sel = k == self.sel_cell
+                color = style.HIGHLIGHT if sel else style.SEQ_POINTS(0.1 + 0.8 * k / max(len(G.cells) - 1, 1))
+                axl.add_patch(Rectangle((a, k - 0.35), b - a, 0.7, facecolor=color,
+                                        alpha=0.8 if sel else 0.6, edgecolor="none"))
+            jitter = np.random.default_rng(0).uniform(-0.3, 0.3, len(f))
+            axl.scatter(f, -1 + jitter * 0.6, s=3, color=style.TEXT2)
+            axl.set_xlim(vmin - 0.02 * (vmax - vmin + 1e-9), vmax + 0.02 * (vmax - vmin + 1e-9))
+            axl.set_ylim(-1.6, len(G.cells) - 0.4)
+            axl.set_yticks([])
+            axl.set_xlabel(self.lens.currentText())
+            axl.set_title("Lente y recubrimiento")
+            axl.grid(axis="y", visible=False)
+        else:
+            for k, ((a, b), (c, e)) in enumerate(G.cells):
+                sel = k == self.sel_cell
+                axl.add_patch(Rectangle((a, c), b - a, e - c, facecolor=style.HIGHLIGHT if sel else "none",
+                                        alpha=0.35 if sel else 1.0,
+                                        edgecolor=style.HIGHLIGHT if sel else style.MUTED,
+                                        linewidth=1.5 if sel else 0.6))
+            axl.scatter(G.lens[:, 0], G.lens[:, 1], s=4, c=f, cmap=style.SEQ_POINTS, vmin=vmin, vmax=vmax)
+            axl.set_xlabel(self.lens.currentText())
+            axl.set_ylabel(self.lens2.currentText())
+            axl.set_title("Lente 2D y recubrimiento")
+            axl.grid(False)
 
-        # grafo
+        # grafo y nervio
         self.ax_graph = axg = fig.add_subplot(gs[:, 1])
         axg.grid(False)
         axg.set_xticks([])
         axg.set_yticks([])
         if self.pos:
             P = np.array([self.pos[i] for i in range(len(G.nodes))])
+            if G.triangles:
+                axg.add_collection(PolyCollection([P[list(t)] for t in G.triangles],
+                                                  facecolor=style.T["accent"], alpha=0.15,
+                                                  edgecolor="none", zorder=0))
             segs = [[P[u], P[v]] for u, v, _ in G.edges]
             axg.add_collection(LineCollection(segs, colors=style.TEXT2, linewidths=1.2, zorder=1))
             sizes = np.array([len(m) for m in G.nodes])
             s = 30 + 400 * np.sqrt(sizes / sizes.max())
-            axg.scatter(P[:, 0], P[:, 1], s=s, c=G.node_lens_mean(), cmap=style.SEQ_CMAP,
+            axg.scatter(P[:, 0], P[:, 1], s=s, c=G.node_lens_mean(), cmap=style.SEQ_POINTS,
                         vmin=vmin, vmax=vmax, edgecolors=style.TEXT2, linewidths=0.6, zorder=2)
             if self.sel_node is not None:
                 axg.scatter(*P[self.sel_node], s=s[self.sel_node] * 1.3, facecolors="none",
                             edgecolors=style.HIGHLIGHT, linewidths=2.5, zorder=3)
-            if self.sel_interval is not None:
-                ks = [i for i, k in enumerate(G.node_interval) if k == self.sel_interval]
-                axg.scatter(P[ks, 0], P[ks, 1], s=s[ks] * 1.3, facecolors="none",
-                            edgecolors=style.HIGHLIGHT, linewidths=2.5, zorder=3)
+            if self.sel_cell is not None:
+                ks = [i for i, k in enumerate(G.node_cell) if k == self.sel_cell]
+                if ks:
+                    axg.scatter(P[ks, 0], P[ks, 1], s=s[ks] * 1.3, facecolors="none",
+                                edgecolors=style.HIGHLIGHT, linewidths=2.5, zorder=3)
             pad = 0.15
             axg.set_xlim(P[:, 0].min() - pad, P[:, 0].max() + pad)
             axg.set_ylim(P[:, 1].min() - pad, P[:, 1].max() + pad)
-        axg.set_title("Grafo Mapper (color = media de la lente, tamaño = nº de puntos)")
+        axg.set_title("Grafo Mapper" + (" y nervio" if G.triangles else ""))
+        axg.text(0.5, -0.01, "color: media de la lente · tamaño: nº de puntos"
+                 + (" · sombreado: triples intersecciones" if G.triangles else ""),
+                 transform=axg.transAxes, ha="center", va="top", fontsize=8, color=style.TEXT2)
         self.canvas.draw()
 
         b0, b1 = G.betti
         covered = len(set(np.concatenate(G.nodes).tolist())) if G.nodes else 0
-        txt = (f"Nodos: <b>{len(G.nodes)}</b>, aristas: <b>{len(G.edges)}</b><br>"
-               f"β<sub>0</sub> = <b>{b0}</b>, β<sub>1</sub> = <b>{b1}</b> (del grafo)<br>"
-               f"Puntos en algún nodo: {covered} de {len(X)}")
+        txt = (f"Nodos: <b>{len(G.nodes)}</b>, aristas: <b>{len(G.edges)}</b>, "
+               f"triángulos: <b>{len(G.triangles)}</b><br>"
+               f"Grafo: β<sub>0</sub> = <b>{b0}</b>, β<sub>1</sub> = <b>{b1}</b>")
+        if G.triangles:
+            nb = G.nerve_betti()
+            txt += (f"<br>Nervio (con triángulos, Z/2): β<sub>0</sub> = <b>{nb[0]}</b>, "
+                    f"β<sub>1</sub> = <b>{nb[1]}</b>, β<sub>2</sub> = <b>{nb[2]}</b>")
+        txt += f"<br>Puntos en algún nodo: {covered} de {len(X)}"
         if self.sel_node is not None:
             txt += (f"<br><b>Nodo {self.sel_node}</b>: {len(G.nodes[self.sel_node])} puntos, "
-                    f"intervalo {G.node_interval[self.sel_node] + 1}")
+                    f"celda {G.node_cell[self.sel_node] + 1}")
         self.info.setText(txt)

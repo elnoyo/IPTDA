@@ -37,6 +37,17 @@ def setup_axes_for(ax, X, pad=0.12):
             ax.set_box_aspect((1, 1, 1))
         except Exception:  # pragma: no cover
             pass
+        style_3d(ax)
+
+
+def style_3d(ax):
+    """Paneles y rejilla de los ejes 3D acordes con el tema."""
+    from matplotlib.colors import to_rgba
+    pane = to_rgba(style.T["surface2"])
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_pane_color(pane)
+        axis._axinfo["grid"]["color"] = to_rgba(style.T["grid"])
+        axis.line.set_color(style.T["border"])
 
 
 def draw_complex(ax, X, simplices, *, balls: float | None = None, point_colors=None,
@@ -97,7 +108,7 @@ def draw_complex(ax, X, simplices, *, balls: float | None = None, point_colors=N
             colors[list(active_vertices)] = style.POINT_COLOR
         kw = dict(c=list(colors))
     else:
-        kw = dict(c=point_colors, cmap=cmap or style.SEQ_CMAP, vmin=vmin, vmax=vmax)
+        kw = dict(c=point_colors, cmap=cmap or style.SEQ_POINTS, vmin=vmin, vmax=vmax)
     if d == 2:
         sc = ax.scatter(X[:, 0], X[:, 1], s=point_size, zorder=5, edgecolors="white",
                         linewidths=0.5, **kw)
@@ -168,7 +179,7 @@ def draw_diagram(ax, pairs, vmax: float, t: float | None = None, selected=None,
     ax.axhline(inf_y, color=style.MUTED, lw=0.8, ls=":")
     ax.text(lo, inf_y, " ∞", va="bottom", ha="left", color=style.TEXT2, fontsize=9)
     if t is not None:
-        ax.add_patch(Rectangle((lo, t), t - lo, hi - t, facecolor="#2a78d6", alpha=0.06,
+        ax.add_patch(Rectangle((lo, t), t - lo, hi - t, facecolor=style.T["accent"], alpha=0.07,
                                edgecolor="none"))
         ax.axvline(t, color=style.TEXT, lw=0.8, ls="--")
         ax.axhline(t, color=style.TEXT, lw=0.8, ls="--")

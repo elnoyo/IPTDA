@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox
 
 from ...core.filtration import METHODS, build_filtration
 from ...core.geometry import pairwise_distances
@@ -28,13 +28,17 @@ descompone de forma única en intervalos [b, d): es el <b>código de barras</b>.
 <li>β<sub>k</sub>(K<sub>r</sub>) = número de barras de dimensión k que contienen a r
 (región sombreada del diagrama: b ≤ r &lt; d).</li>
 </ul>
-<p><b>Algoritmo:</b> reducción por columnas de la matriz borde sobre Z/2 (con la
-optimización de «limpieza»). Si la columna reducida del símplice j tiene pivote
+<p><b>Algoritmo:</b> reducción por columnas de la matriz borde con coeficientes en un
+cuerpo Z/p (por defecto Z/2), con la optimización de «limpieza». Si la columna reducida del símplice j tiene pivote
 i, se forma el par (i, j). La columna reducida es además un <b>ciclo
 representante</b> de la clase.</p>
 <p><b>Interacción:</b> haz clic en una barra o en un punto del diagrama para ver su
 ciclo representante (en rojo); el parámetro r se sitúa en mitad de su vida. En H0,
 se resalta la arista que fusiona las dos componentes.</p>
+<p><b>Coeficientes:</b> el diagrama puede depender del cuerpo cuando la homología entera
+tiene torsión (p. ej. el plano proyectivo: H<sub>1</sub>(RP²; Z) = Z/2). En las filtraciones
+alfa y de Čech de puntos de R² o R³, cada K<sub>r</sub> equivale a una unión de bolas de R³,
+cuya homología entera no tiene torsión, así que sus números de Betti no dependen del cuerpo.</p>
 <p><b>Truncamiento:</b> con símplices hasta dimensión D solo es fiable la homología
 hasta D−1, y con un radio máximo las barras que no mueren antes aparecen infinitas.</p>
 """
@@ -42,6 +46,7 @@ hasta D−1, y con un radio máximo las barras que no mueren antes aparecen infi
 
 class PersistencePanel(BasePanel):
     title = "Persistencia"
+    subtitle = "Cómo nacen y mueren los rasgos topológicos al crecer la escala"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,13 +70,18 @@ class PersistencePanel(BasePanel):
         self.auto_rmax = checkbox("automático (½ del diámetro)", True)
         self.landmarks = ispin(3, 200, 30)
         self.nu = ispin(0, 2, 1)
+        self.field = QComboBox()
+        for p in (2, 3, 5, 7):
+            self.field.addItem(f"Z/{p}", p)
         f.addRow("Método", self.method)
+        f.addRow("Coeficientes", self.field)
         f.addRow("Homología hasta dim.", self.hom_dim)
         f.addRow("Radio máximo", self.rmax)
         f.addRow("", self.auto_rmax)
         f.addRow("Puntos de referencia", self.landmarks)
         f.addRow("ν (testigos)", self.nu)
         self.method.currentIndexChanged.connect(self.compute)
+        self.field.currentIndexChanged.connect(self.compute)
         for w in (self.hom_dim, self.rmax, self.landmarks, self.nu):
             w.valueChanged.connect(self.compute)
         self.auto_rmax.toggled.connect(self.compute)
@@ -84,10 +94,7 @@ class PersistencePanel(BasePanel):
         self.show_complex = checkbox("Mostrar el complejo", True, self.redraw)
         g.addRow(self.show_balls)
         g.addRow(self.show_complex)
-        self.betti = QLabel()
-        self.betti.setObjectName("badge")
-        self.betti.setWordWrap(True)
-        self.controls.addWidget(self.betti)
+        self.betti = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
 
@@ -108,10 +115,12 @@ class PersistencePanel(BasePanel):
         else:
             rmax = float(self.rmax.value())
         nl, nu = self.landmarks.value(), self.nu.value()
+        field = self.field.currentData()
 
         def job():
             F, L = build_filtration(method, X, max_dim, rmax, nl, nu)
-            P = compute_persistence(F, max_dim=min(hd, F.reliable_dim), essential_cycles=True)
+            P = compute_persistence(F, max_dim=min(hd, F.reliable_dim), essential_cycles=True,
+                                    field=field)
             return X, F, P, L, rmax
 
         self.run_job(job, self._done, "Calculando la persistencia…")
@@ -172,7 +181,7 @@ class PersistencePanel(BasePanel):
 
         betti = self.P.betti_numbers_at(t)
         txt = " &nbsp; ".join(f"β<sub>{k}</sub>({unit}) = <b>{b}</b>" for k, b in enumerate(betti))
-        txt += f"<br>{len(self.F)} símplices en la filtración."
+        txt += f"<br>{len(self.F)} símplices en la filtración; coeficientes en Z/{self.P.field}."
         top = sorted([p for p in self.pairs if p.dim >= 1], key=lambda p: -p.persistence)[:3]
         if top:
             txt += "<br>Rasgos más persistentes: " + "; ".join(

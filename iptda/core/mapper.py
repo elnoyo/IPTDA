@@ -118,11 +118,39 @@ def dbscan(X: np.ndarray, eps: float, min_samples: int) -> np.ndarray:
 
 @dataclass
 class MapperGraph:
+    """Resultado de Mapper.
+
+    ``cells[k]`` es la celda ``k`` del recubrimiento: una tupla con un
+    intervalo ``(a, b)`` por cada componente de la lente (1 o 2). Con una
+    lente 2D las celdas son rectángulos.
+    """
     nodes: list[np.ndarray]                 # índices de los puntos de cada nodo
-    node_interval: list[int]                # intervalo del recubrimiento de cada nodo
+    node_cell: list[int]                    # celda del recubrimiento de cada nodo
     edges: list[tuple[int, int, int]]       # (u, v, número de puntos comunes)
-    intervals: list[tuple[float, float]]
-    lens: np.ndarray
+    cells: list[tuple[tuple[float, float], ...]]
+    lens: np.ndarray                        # (n,) o (n, 2)
+    triangles: list[tuple[int, int, int]]   # 2-símplices del nervio (tres nodos con un punto común)
+    cell_grid: list[tuple[int, ...]]        # índice (i) o (i, j) de cada celda en la rejilla
+
+    @property
+    def lens_dim(self) -> int:
+        return 1 if self.lens.ndim == 1 else self.lens.shape[1]
+
+    @property
+    def intervals(self) -> list[tuple[float, float]]:
+        """Intervalos del recubrimiento (solo lente 1D)."""
+        return [c[0] for c in self.cells]
+
+    @property
+    def node_interval(self) -> list[int]:
+        return self.node_cell
+
+    def cell_members(self, k: int) -> np.ndarray:
+        L = self.lens.reshape(len(self.lens), -1)
+        mask = np.ones(len(L), dtype=bool)
+        for d, (a, b) in enumerate(self.cells[k]):
+            mask &= (L[:, d] >= a) & (L[:, d] <= b)
+        return np.nonzero(mask)[0]
 
     @property
     def n_components(self) -> int:
@@ -143,19 +171,50 @@ class MapperGraph:
         b0 = self.n_components
         return b0, len(self.edges) - len(self.nodes) + b0
 
+    def nerve_betti(self) -> list[int]:
+        """Números de Betti (Z/2) del nervio con sus triángulos: los ciclos
+        del grafo rellenados por triples intersecciones dejan de contar."""
+        from .filtration import static_complex
+        from .homology import homology
+        if not self.nodes:
+            return [0]
+        maximal = [(u,) for u in range(len(self.nodes))] + [(u, v) for u, v, _ in self.edges]
+        maximal += list(self.triangles)
+        H = homology(static_complex(maximal), "Z/2", with_generators=False)
+        return (H.betti + [0, 0, 0])[:3]
+
     def node_lens_mean(self) -> np.ndarray:
-        return np.array([self.lens[m].mean() for m in self.nodes])
+        L = self.lens if self.lens.ndim == 1 else self.lens[:, 0]
+        return np.array([L[m].mean() for m in self.nodes])
 
 
-def mapper(X: np.ndarray, lens: np.ndarray, n_intervals: int = 10, overlap: float = 0.3,
+def mapper(X: np.ndarray, lens: np.ndarray, n_intervals=10, overlap: float = 0.3,
            clustering: str = "Enlace simple", threshold: float = 0.3,
            min_samples: int = 3) -> MapperGraph:
+    """Mapper con lente 1D (``lens`` de forma (n,)) o 2D (forma (n, 2)).
+
+    Con lente 2D el recubrimiento es el producto de los recubrimientos por
+    intervalos de cada componente (``n_intervals`` puede ser un entero o un
+    par). Además del grafo se calculan los triángulos del nervio."""
+    from itertools import combinations, product
     X = np.asarray(X, dtype=float)
     lens = np.asarray(lens, dtype=float)
-    intervals = uniform_cover(lens, n_intervals, overlap)
-    nodes, node_int = [], []
-    for k, (a, b) in enumerate(intervals):
-        idx = np.nonzero((lens >= a) & (lens <= b))[0]
+    L = lens.reshape(len(lens), -1)
+    m = L.shape[1]
+    if m not in (1, 2):
+        raise ValueError("La lente debe tener 1 o 2 componentes.")
+    ns = [int(n_intervals)] * m if np.isscalar(n_intervals) else [int(v) for v in n_intervals]
+    covers = [uniform_cover(L[:, d], ns[d], overlap) for d in range(m)]
+    cells, grid = [], []
+    for ij in product(*[range(len(c)) for c in covers]):
+        cells.append(tuple(covers[d][ij[d]] for d in range(m)))
+        grid.append(tuple(ij))
+    nodes, node_cell = [], []
+    for k, cell in enumerate(cells):
+        mask = np.ones(len(L), dtype=bool)
+        for d, (a, b) in enumerate(cell):
+            mask &= (L[:, d] >= a) & (L[:, d] <= b)
+        idx = np.nonzero(mask)[0]
         if len(idx) == 0:
             continue
         if clustering == "Enlace simple":
@@ -168,12 +227,18 @@ def mapper(X: np.ndarray, lens: np.ndarray, n_intervals: int = 10, overlap: floa
             if c < 0:
                 continue
             nodes.append(idx[lab == c])
-            node_int.append(k)
-    edges = []
-    sets = [set(m.tolist()) for m in nodes]
-    for u in range(len(nodes)):
-        for v in range(u + 1, len(nodes)):
-            w = len(sets[u] & sets[v])
-            if w:
-                edges.append((u, v, w))
-    return MapperGraph(nodes, node_int, edges, intervals, lens)
+            node_cell.append(k)
+    # nodos que contienen a cada punto -> aristas y triángulos del nervio
+    member: dict[int, list[int]] = {}
+    for u, pts in enumerate(nodes):
+        for x in pts.tolist():
+            member.setdefault(x, []).append(u)
+    weight: dict[tuple[int, int], int] = {}
+    tris = set()
+    for us in member.values():
+        for e in combinations(sorted(us), 2):
+            weight[e] = weight.get(e, 0) + 1
+        if len(us) >= 3:
+            tris.update(combinations(sorted(us), 3))
+    edges = [(u, v, w) for (u, v), w in sorted(weight.items())]
+    return MapperGraph(nodes, node_cell, edges, cells, lens, sorted(tris), grid)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtWidgets import QComboBox, QLabel, QTabWidget
+from PySide6.QtWidgets import QComboBox, QTabWidget
 
 from ...core.filtration import alpha_filtration, lower_star_path, rips_filtration
 from ...core.geometry import maxmin_subsample, pairwise_distances
@@ -41,6 +41,7 @@ pares (mínimo, máximo) miden la «prominencia» de cada valle.</p>
 
 class TimeSeriesPanel(BasePanel):
     title = "Series temporales"
+    subtitle = "Periodicidad y forma de una señal mediante ventanas deslizantes y subniveles"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,10 +93,7 @@ class TimeSeriesPanel(BasePanel):
         h.addRow("Nivel t", self.level)
         h.addRow(self.superlevel)
 
-        self.info = QLabel()
-        self.info.setObjectName("badge")
-        self.info.setWordWrap(True)
-        self.controls.addWidget(self.info)
+        self.info = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
 
@@ -106,6 +104,10 @@ class TimeSeriesPanel(BasePanel):
         self.tabs.addTab(self.c_sub, "Filtración por subnivel")
         self.plots.addWidget(self.tabs)
         self.compute()
+
+    def refresh(self):
+        self.redraw_takens()
+        self.redraw_sublevel()
 
     # -- señal ----------------------------------------------------------------------
     def _signal(self):
@@ -162,17 +164,17 @@ class TimeSeriesPanel(BasePanel):
         i_win = int(round(self.window.value() * (len(E) - 1)))
         i0 = i_win * step
         idx = i0 + tau * np.arange(d)
-        ax.scatter(idx, x[idx], color=style.HIGHLIGHT, s=40, zorder=3,
-                   label=f"v_{i_win} = (x_{i0}, x_{i0}+τ, …)")
-        ax.set_title(f"Señal: {self.signal.currentText()}")
+        ax.scatter(idx, x[idx], color=style.HIGHLIGHT, s=40, zorder=3)
+        comps = ", ".join(f"x{j}" for j in idx[:4]) + (", …" if d > 4 else "")
+        ax.set_title(f"Señal: {self.signal.currentText()}\n"
+                     f"en rojo, la ventana v{i_win} = ({comps})")
         ax.set_xlabel("i")
-        ax.legend(loc="upper right")
         ax2 = fig.add_subplot(gs[0, 2])
         ac = autocorrelation(x, min(len(x) // 2, max(4 * tau, 50)))
         ax2.plot(ac, color=style.dim_color(0), lw=1.5)
         ax2.axvline(tau, color=style.HIGHLIGHT, lw=1, ls="--")
         ax2.axhline(0, color=style.MUTED, lw=0.8)
-        ax2.set_title("Autocorrelación (τ en rojo)")
+        ax2.set_title("Autocorrelación\n(τ en rojo)")
         ax2.set_xlabel("retardo")
 
         Y = E if d <= 3 else pca_project(E, 3)
