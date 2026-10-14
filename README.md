@@ -12,7 +12,9 @@ paquete con NumPy/SciPy, de forma legible, y validados con tests.
 
 ## Instalación y ejecución
 
-Requiere Python ≥ 3.10.
+Requiere Python ≥ 3.10. Con Python 3.10 y 3.11 se instala PySide6 < 6.12: la versión
+6.12.0 pierde una referencia a `None` en cada llamada y el intérprete acaba abortando
+(«none_dealloc»); con Python ≥ 3.12 el problema no existe.
 
 ```bash
 pip install -r requirements.txt

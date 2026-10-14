@@ -116,6 +116,28 @@ def test_homology_panel(app):
     assert "repetido" in p.status.text()
 
 
+@pytest.mark.skipif(__import__("sys").version_info >= (3, 12),
+                    reason="desde Python 3.12 None es inmortal y su contador no cambia")
+def test_qt_calls_keep_none_refcount(app):
+    """Regresión: PySide6 6.12.0 con Python < 3.12 pierde una referencia a
+    None en cada llamada a un método que no devuelve nada (setText…), y el
+    intérprete acaba abortando («none_dealloc»). Ver requirements.txt."""
+    import gc
+    import sys
+    from iptda.gui.panels.homology import HomologyPanel
+    p = HomologyPanel()
+    p.source.setCurrentText("Toro (polígono fundamental)")
+    gc.collect()
+    before = sys.getrefcount(None)
+    for _ in range(20):
+        for i in range(p.gen.count()):
+            p.gen.setCurrentIndex(i)
+        p._show_matrix()
+        p.set_status("…")
+    gc.collect()
+    assert sys.getrefcount(None) >= before - 50
+
+
 def test_persistence_panel(app):
     from iptda.core.filtration import METHODS
     from iptda.gui.panels.persistence import PersistencePanel
