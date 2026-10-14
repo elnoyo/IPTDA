@@ -38,6 +38,7 @@ class PersistencePair:
     birth_index: int
     death_index: int | None
     cycle: list[tuple[int, ...]] | None = None   # representante (símplices de dim `dim`)
+    coefficients: list[int] | None = None        # coeficientes del ciclo (solo si p > 2)
 
     @property
     def persistence(self) -> float:
@@ -57,6 +58,7 @@ class PersistenceResult:
     pairs: list[PersistencePair]
     max_dim: int
     filtration: Filtration | None = field(default=None, repr=False)
+    field: int = 2                    # característica del cuerpo de coeficientes Z/p
 
     def by_dim(self, dim: int, include_zero: bool = False) -> list[PersistencePair]:
         """Pares de dimensión ``dim``. Por defecto se omiten los de
@@ -80,9 +82,11 @@ class PersistenceResult:
 
 def compute_persistence(filt: Filtration, max_dim: int | None = None,
                         cycles: bool = True, essential_cycles: bool = False,
-                        cycle_dims: tuple[int, ...] | None = None) -> PersistenceResult:
+                        cycle_dims: tuple[int, ...] | None = None,
+                        field: int = 2) -> PersistenceResult:
     """Calcula la persistencia de ``filt`` hasta la dimensión homológica
-    ``max_dim`` (por defecto ``filt.reliable_dim``).
+    ``max_dim`` (por defecto ``filt.reliable_dim``) con coeficientes en el
+    cuerpo Z/p, ``p = field`` primo (por defecto Z/2).
 
     ``cycles``: guardar representantes de las barras finitas.
     ``essential_cycles``: guardar también representantes de las infinitas.
@@ -97,6 +101,10 @@ def compute_persistence(filt: Filtration, max_dim: int | None = None,
     if max_dim is None:
         max_dim = filt.reliable_dim
     max_dim = max(0, min(max_dim, filt.max_dim))
+    if not _is_prime(field):
+        raise ValueError(f"{field} no es primo: Z/{field} no es un cuerpo.")
+    if field != 2:
+        return _persistence_mod_p(filt, max_dim, field, cycles, essential_cycles, cycle_dims)
     if not cycles and not essential_cycles:
         return _cohomology_persistence(filt, max_dim)
     simplices = filt.simplices
@@ -164,7 +172,6 @@ def compute_persistence(filt: Filtration, max_dim: int | None = None,
     return PersistenceResult(pairs, max_dim, filt)
 
 
-
 def coboundary_lists(dims: np.ndarray, bnd: list[list[int]], max_dim: int) -> list[list[int]]:
     """Cocaras de codimensión 1 de cada símplice (hasta dimensión max_dim+1)."""
     cob: list[list[int]] = [[] for _ in range(len(bnd))]
@@ -229,3 +236,152 @@ def _cohomology_persistence(filt: Filtration, max_dim: int) -> PersistenceResult
              for d, i, j in cohomology_pairs(dims, cob, max_dim)]
     pairs.sort(key=lambda p: p.birth_index)
     return PersistenceResult(pairs, max_dim, filt)
+
+
+# ---------------------------------------------------------------------------
+# Coeficientes en Z/p (p primo impar)
+# ---------------------------------------------------------------------------
+
+def _is_prime(p: int) -> bool:
+    p = int(p)
+    return p >= 2 and all(p % q for q in range(2, int(p ** 0.5) + 1))
+
+
+def _signed_boundary(filt: Filtration) -> list[dict[int, int]]:
+    """Columnas de la matriz borde orientada:
+    ∂[v0..vk] = Σ (−1)^i [v0..v̂i..vk]."""
+    idx = filt.index
+    out = []
+    for s in filt.simplices:
+        col = {}
+        if len(s) > 1:
+            for i in range(len(s)):
+                col[idx[s[:i] + s[i + 1:]]] = -1 if i % 2 else 1
+        out.append(col)
+    return out
+
+
+def _axpy(col: dict, c: int, other: dict, p: int):
+    """col ← col − c·other  (mod p), eliminando las entradas nulas."""
+    for r, v in other.items():
+        nv = (col.get(r, 0) - c * v) % p
+        if nv:
+            col[r] = nv
+        else:
+            col.pop(r, None)
+
+
+def _scale(col: dict, c: int, p: int) -> dict:
+    return {r: (v * c) % p for r, v in col.items()}
+
+
+def _persistence_mod_p(filt: Filtration, max_dim: int, p: int, cycles: bool,
+                       essential_cycles: bool, cycle_dims) -> PersistenceResult:
+    """Reducción por columnas de la matriz borde con coeficientes en Z/p.
+
+    Igual que en Z/2, pero cada columna es un diccionario {fila: coeficiente}
+    y para anular el pivote se resta el múltiplo adecuado de la columna
+    pivote (normalizada para que su pivote valga 1)."""
+    if not cycles and not essential_cycles:
+        return _cohomology_mod_p(filt, max_dim, p)
+    simplices = filt.simplices
+    values = filt.values
+    dims = filt.dims
+    N = len(simplices)
+    bnd = _signed_boundary(filt)
+    want = (lambda k: k >= 1) if cycle_dims is None else (lambda k: k in cycle_dims)
+    R: list[dict | None] = [None] * N
+    V: list[dict | None] = [None] * N
+    pivot_of: dict[int, int] = {}
+    cleared = np.zeros(N, dtype=bool)
+    top = min(max_dim + 1, filt.max_dim)
+    for d in range(top, 0, -1):
+        track_v = essential_cycles and want(d)
+        for j in np.nonzero(dims == d)[0]:
+            j = int(j)
+            if cleared[j]:
+                R[j] = {}
+                continue
+            col = {r: v % p for r, v in bnd[j].items()}
+            v = {j: 1} if track_v else None
+            while col:
+                low = max(col)
+                k = pivot_of.get(low)
+                if k is None:
+                    break
+                c = col[low]
+                _axpy(col, c, R[k], p)
+                if track_v:
+                    _axpy(v, c, V[k], p)
+            if col:
+                inv = pow(col[max(col)], -1, p)       # normaliza: pivote = 1
+                col = _scale(col, inv, p)
+                if track_v:
+                    v = _scale(v, inv, p)
+                pivot_of[max(col)] = j
+                cleared[max(col)] = True
+            R[j] = col
+            if track_v:
+                V[j] = v
+
+    def as_cycle(chain: dict):
+        keys = sorted(chain)
+        return [simplices[a] for a in keys], [int(chain[a]) for a in keys]
+
+    pairs: list[PersistencePair] = []
+    for i in range(N):
+        d = int(dims[i])
+        if d > max_dim or R[i]:
+            continue
+        j = pivot_of.get(i)
+        if j is None:
+            cyc = coef = None
+            if essential_cycles and want(d):
+                if d == 0:
+                    cyc, coef = [simplices[i]], [1]
+                elif V[i] is not None:
+                    cyc, coef = as_cycle(V[i])
+            pairs.append(PersistencePair(d, float(values[i]), np.inf, i, None, cyc, coef))
+        else:
+            cyc = coef = None
+            if cycles and want(d) and d >= 1:
+                cyc, coef = as_cycle(R[j])
+            pairs.append(PersistencePair(d, float(values[i]), float(values[j]), i, j, cyc, coef))
+    return PersistenceResult(pairs, max_dim, filt, field=p)
+
+
+def _cohomology_mod_p(filt: Filtration, max_dim: int, p: int) -> PersistenceResult:
+    """Reducción de la matriz cofrontera con coeficientes en Z/p (mismos
+    pares que la reducción de la matriz borde; ver ``cohomology_pairs``)."""
+    dims = filt.dims
+    values = filt.values
+    N = len(filt.simplices)
+    cob: list[dict[int, int]] = [{} for _ in range(N)]
+    for j, col in enumerate(_signed_boundary(filt)):
+        if dims[j] <= max_dim + 1:
+            for i, sgn in col.items():
+                cob[i][j] = sgn % p
+    pairs = []
+    killed = np.zeros(N, dtype=bool)
+    for d in range(0, max_dim + 1):
+        pivot_of: dict[int, dict] = {}
+        for i in np.nonzero(dims == d)[0][::-1]:
+            i = int(i)
+            if killed[i]:
+                continue
+            col = dict(cob[i])
+            while col:
+                low = min(col)
+                other = pivot_of.get(low)
+                if other is None:
+                    break
+                _axpy(col, col[low], other, p)
+            if col:
+                j = min(col)
+                pivot_of[j] = _scale(col, pow(col[j], -1, p), p)
+                killed[j] = True
+                pairs.append(PersistencePair(d, float(values[i]), float(values[j]), i, j))
+            else:
+                pairs.append(PersistencePair(d, float(values[i]), np.inf, i, None))
+    pairs.sort(key=lambda q: q.birth_index)
+    return PersistenceResult(pairs, max_dim, filt, field=p)
