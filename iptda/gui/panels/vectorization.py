@@ -4,7 +4,7 @@ paisajes, imágenes de persistencia y entropía)."""
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox
 
 from ...core.filtration import alpha_filtration, rips_filtration
 from ...core.geometry import pairwise_distances
@@ -39,6 +39,7 @@ curvas y paisajes, y se omiten en la imagen y la entropía.</p>
 
 class VectorizationPanel(BasePanel):
     title = "Vectorizaciones"
+    subtitle = "Del diagrama de persistencia a vectores para estadística y aprendizaje automático"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,10 +70,7 @@ class VectorizationPanel(BasePanel):
         for w in (self.k, self.sigma, self.res):
             w.valueChanged.connect(self.redraw)
         self.weight.currentIndexChanged.connect(self.redraw)
-        self.info = QLabel()
-        self.info.setObjectName("badge")
-        self.info.setWordWrap(True)
-        self.controls.addWidget(self.info)
+        self.info = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
         self.canvas = MplCanvas()

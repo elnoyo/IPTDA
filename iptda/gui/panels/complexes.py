@@ -44,6 +44,7 @@ punto, clic derecho elimina el más cercano).</p>
 
 class ComplexesPanel(BasePanel):
     title = "Complejos simpliciales"
+    subtitle = "De una nube de puntos a un complejo simplicial a una escala r"
 
     def __init__(self, parent=None):
         super().__init__(parent)

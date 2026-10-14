@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.collections import LineCollection
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox
 
 from ...core.distances import bottleneck, wasserstein
 from ...core.filtration import alpha_filtration, cech_filtration, rips_filtration
@@ -44,6 +44,7 @@ PERTURB = ["Uniforme en la bola de radio δ", "Gaussiana de desviación δ"]
 
 class StabilityPanel(BasePanel):
     title = "Estabilidad"
+    subtitle = "Pequeños cambios en los datos producen pequeños cambios en el diagrama"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,10 +79,7 @@ class StabilityPanel(BasePanel):
         self.method.currentIndexChanged.connect(self.compute)
         self.dim.currentIndexChanged.connect(self.redraw)
         self.add_button("Calcular curva d_B(δ)", self.compute_curve, primary=False)
-        self.info = QLabel()
-        self.info.setObjectName("badge")
-        self.info.setWordWrap(True)
-        self.controls.addWidget(self.info)
+        self.info = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
         self.canvas = MplCanvas()

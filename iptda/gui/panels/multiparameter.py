@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.colors import BoundaryNorm
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox
 
 from ...core.geometry import pairwise_distances
 from ...core.multipers import (CODENSITIES, codensity, fibered_barcode, hilbert_function,
@@ -36,13 +36,15 @@ El conjunto de todos los códigos fibrados equivale al invariante de rango.</li>
 </ul>
 <p><b>Interacción:</b> haz clic en el mapa de calor para fijar el punto a (se dibuja
 K(a) a la izquierda). El ángulo θ (en coordenadas normalizadas del rectángulo) fija
-la recta y «s» el punto b sobre ella. θ = 0° es la filtración de Rips de los puntos
+la recta y «s» el punto b sobre ella. Funciona con nubes 2D y 3D; con «Atípicos añadidos»
+puedes contaminar cualquier conjunto y ver cómo la densidad los separa. θ = 0° es la filtración de Rips de los puntos
 con codensidad ≤ c<sub>a</sub>; θ = 90° es la filtración por codensidad con radio fijo.</p>
 """
 
 
 class MultiParameterPanel(BasePanel):
     title = "Persistencia biparamétrica"
+    subtitle = "Escala y densidad a la vez: invariantes de un módulo de dos parámetros"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,8 +52,8 @@ class MultiParameterPanel(BasePanel):
         self.HF = None
         self.a = None
 
-        self.data = PointCloudBox(dims=(2,), default="Circunferencia con atípicos", n=70,
-                                  noise=0.03, max_n=150)
+        self.data = PointCloudBox(dims=(2, 3), default="Circunferencia con atípicos", n=70,
+                                  noise=0.03, max_n=150, outliers=0.0)
         self.controls.addWidget(self.data)
         self.data.changed.connect(self.compute)
         f = self.add_group("Bifiltración")
@@ -85,10 +87,7 @@ class MultiParameterPanel(BasePanel):
         self.dim.currentIndexChanged.connect(self.redraw)
         self.theta.valueChanged.connect(self.redraw)
         self.s.valueChanged.connect(self.redraw)
-        self.info = QLabel()
-        self.info.setObjectName("badge")
-        self.info.setWordWrap(True)
-        self.controls.addWidget(self.info)
+        self.info = self.add_info()
         self.finish_controls()
         self.set_theory(THEORY)
         self.canvas = MplCanvas()
@@ -166,7 +165,7 @@ class MultiParameterPanel(BasePanel):
         fig = self.canvas.figure
         fig.clear()
         gs = fig.add_gridspec(2, 2)
-        ax0 = fig.add_subplot(gs[0, 0])
+        ax0 = fig.add_subplot(gs[0, 0], projection="3d" if self.X.shape[1] == 3 else None)
         S = self.B.complex_at(*a)
         active = np.nonzero(self.cod_v <= a[1])[0]
         draw_complex(ax0, self.X, S, active_vertices=active)
