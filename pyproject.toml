@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iptda"
-version = "0.1.0"
+version = "0.2.0"
 description = "Aprender Análisis Topológico de Datos (TDA) de forma gráfica e interactiva"
 readme = "README.md"
 license = { file = "LICENSE" }
